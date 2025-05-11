@@ -1,0 +1,19 @@
+[project]
+name = "binance-depth"
+version = "0.1.0"
+description = "A real-time Binance BTC/USDT depth parser using asyncio, picows, and pysimdjson"
+license = "MIT"
+readme = "README.md"
+requires-python = "==3.12.*"
+
+dependencies = [
+    "picows",
+    "pysimdjson",
+    "uvloop",
+    "sortedcontainers",
+    "beartype",
+    "aiohttp",
+    "pyinstrument",
+    "pytest",
+    "aiofiles"
+]

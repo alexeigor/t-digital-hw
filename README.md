@@ -1,0 +1,29 @@
+How to run:
+```bash
+uv run --isolated main.py --symbols btcusdt ethusdt bnbusdt
+```
+
+To simulate packet losses:
+```bash
+uv run --isolated main.py --simulate-desync --symbols btcusdt ethusdt bnbusdt
+```
+
+How to run tests:
+```bash
+uv run --isolated pytest test_order_book.py
+```
+
+Libraries used:
+ - pysimdjson - fast json parser (using simd)
+ - picows - performant websockets library
+ - uvloop - event loop for asyncio
+ - beartype - type checking
+ - sortedcontainers - for sorted dict
+
+
+How to further improve this project:
+ - each instrument has a concept of tickSize and stepSize that can be used to transition to integer calculations
+ - handle binance limits on number of requests per second, etc.
+ - Handle 24h reconnects
+ - Use multiprocessing or threading (each process handles group of instruments)
+ - split into more python files
