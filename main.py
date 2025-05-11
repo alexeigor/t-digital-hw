@@ -31,6 +31,11 @@ class OrderBook:
         self.asks: SortedDict[float, float] = SortedDict()
         self.last_update_id: Optional[int] = None
 
+    def clear(self) -> None:
+        self.bids.clear()
+        self.asks.clear()
+        self.last_update_id = None
+
     def update_from_snapshot(self, snapshot: Dict[str, Any]) -> None:
         self.last_update_id = snapshot["lastUpdateId"]
         self.bids.clear()
@@ -141,6 +146,8 @@ class BaseCalculation:
     
 class SecondLevelSpreadCalculator(BaseCalculation):
     def calc_metric(self) -> Optional[float]:
+        if self.order_book_collection.get_last_update_id(symbol=self.symbol) is None:
+            return None
         bids, asks = self.order_book_collection.get_top_levels(symbol=self.symbol)
         if len(bids) >= 2 and len(asks) >= 2:
             second_bid = bids[1][0]
@@ -216,6 +223,7 @@ class BinanceDepthListener(WSListener):
                         f"[{symbol_upper}] Out of sync! Restarting snapshot process..."
                     )
                     self.snapshot_received[symbol_upper] = False
+                    self.order_books_collection.get_book(symbol_upper).clear()
                     asyncio.create_task(self.fetch_snapshot(symbol_upper))
                     return
                 self.order_books_collection.apply_diff(symbol_upper, update["b"], update["a"])
@@ -224,7 +232,7 @@ class BinanceDepthListener(WSListener):
         log.info(f"[{symbol_upper}] All buffered events applied.")
         self.buffers[symbol_upper] = new_buffer
 
-        if self.snapshot_received[symbol_upper] == False:
+        if not self.snapshot_received[symbol_upper]:
             log.info(f"[{symbol_upper}] No snapshot received yet.")
             asyncio.create_task(self.delayed_snapshot_fetch(symbol))
 
@@ -326,6 +334,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable simulation of desynchronization (for testing purposes)"
     )
+
+    parser.add_argument(
+        "--output-file",
+        type=str,
+        default="output.csv", # Default value if not provided
+        help="Path to the output CSV file for metrics (e.g., /path/to/your/output.csv)",
+    )
     
     return parser.parse_args()
 
@@ -340,6 +355,9 @@ async def main(args: argparse.Namespace) -> None:
         log.warning("Desynchronization simulation is ENABLED.")
     simulate_desync = args.simulate_desync
 
+    output_filepath = args.output_file
+    log.info(f"Metrics will be saved to: {output_filepath}")
+
     order_book_collection = OrderBookCollection(symbols)
 
     scheduler = Scheduler(interval_minutes=args.interval)
@@ -352,14 +370,13 @@ async def main(args: argparse.Namespace) -> None:
         calculators[symbol] = calculator
 
         # Define an async callback for each symbol
-        async def metric_callback(timestamp: str, sym: str = symbol) -> None:
+        async def metric_callback(timestamp: str, sym: str = symbol, filepath: str = output_filepath) -> None:
             # Ensure we are using the correct calculator for this symbol
             current_calculator = calculators[sym]
             log.info(f"Scheduler: Calculating metrics for {sym} at {timestamp}")
             spread = current_calculator.calc_metric()
 
             metric_name = "second_level_spread_percentage"
-            filepath = f"output.csv"
 
             if spread is not None:
                 log.info(f"[{sym}] {metric_name}: {spread:.4f}% at {timestamp}")
@@ -384,7 +401,7 @@ async def main(args: argparse.Namespace) -> None:
         log.info(f"Subscribed SecondLevelSpreadCalculator for {symbol} to scheduler.")
 
     # Start the scheduler as a background task
-    scheduler_task = asyncio.create_task(scheduler.start())
+    asyncio.create_task(scheduler.start())
     log.info("Scheduler task created and started.")
 
     while True:
@@ -415,6 +432,8 @@ if __name__ == "__main__":
         asyncio.run(main(args))
     except KeyboardInterrupt:
         log.info("Stopped manually.")
+    except Exception as e:
+        log.critical(f"Critical error in main execution: {e}", exc_info=True)
     finally:
         profiler.stop()
         with open("profile_report.html", "w") as f:
