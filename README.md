@@ -28,5 +28,6 @@ uv run --isolated pytest test_order_book.py
  - Use multiprocessing or threading (each process handles group of instruments)
  - split into more python files
  - more tests
+ - better errors handling
 
  

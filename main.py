@@ -19,6 +19,8 @@ from picows import ws_connect, WSFrame, WSTransport, WSListener, WSMsgType
 from beartype import beartype
 from beartype.typing import List, Dict, Deque, Tuple, Optional, Any
 
+from aiokafka import AIOKafkaProducer
+
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
@@ -116,6 +118,7 @@ class OrderBookCollection:
         return book.top_levels() if book else None
 
 
+@beartype
 class Scheduler:
     def __init__(self, interval_minutes: int):
         self.interval_minutes = interval_minutes
@@ -136,6 +139,7 @@ class Scheduler:
             for callback in self.subscribers:
                 asyncio.create_task(callback(timestamp))
 
+@beartype
 class BaseCalculation:
     def __init__(self, symbol: str, order_book_collection: OrderBookCollection,):
         self.symbol = symbol
@@ -143,7 +147,8 @@ class BaseCalculation:
 
     def calc_metric(self) -> Optional[float]:
         raise NotImplementedError
-    
+
+@beartype    
 class SecondLevelSpreadCalculator(BaseCalculation):
     def calc_metric(self) -> Optional[float]:
         if self.order_book_collection.get_last_update_id(symbol=self.symbol) is None:
@@ -159,7 +164,7 @@ class SecondLevelSpreadCalculator(BaseCalculation):
 
 
 @beartype
-class BinanceDepthListener(WSListener):
+class BinanceStreamListener(WSListener):
     def __init__(self, symbols: List[str], order_book_collection: OrderBookCollection, simulate_desync_flag: bool = False) -> None:
         super().__init__()
         self.symbols: List[str] = [s.upper() for s in symbols]
@@ -256,12 +261,9 @@ class BinanceDepthListener(WSListener):
             message: str = frame.get_payload_as_ascii_text()
             parsed: Dict[str, Any] = self.json_parser.parse(message).as_dict()
             data: Dict[str, Any] = parsed.get("data", {})
-            # log.debug(f"Received message1")
 
             if not data:
                 return
-
-            # log.debug(f"Received message2")
 
             symbol: str = data["s"]
             update: Dict[str, Any] = {
@@ -294,7 +296,6 @@ class BinanceDepthListener(WSListener):
                     )
                     self.snapshot_received[symbol] = False
                     self.buffers[symbol].clear()
-                    # asyncio.create_task(self.fetch_snapshot(symbol))
                     asyncio.create_task(self.delayed_snapshot_fetch(symbol))
                     return
 
@@ -341,6 +342,19 @@ def parse_args() -> argparse.Namespace:
         default="output.csv", # Default value if not provided
         help="Path to the output CSV file for metrics (e.g., /path/to/your/output.csv)",
     )
+
+    parser.add_argument(
+        "--kafka-brokers",
+        type=str,
+        default=None,
+        help="Comma-separated list of Kafka broker addresses (e.g., localhost:9092). If not provided, Kafka publishing is disabled.",
+    )
+    parser.add_argument(
+        "--kafka-topic",
+        type=str,
+        default="test-topic",
+        help="Kafka topic to which metrics will be published (default: test-topic)",
+    )
     
     return parser.parse_args()
 
@@ -358,6 +372,21 @@ async def main(args: argparse.Namespace) -> None:
     output_filepath = args.output_file
     log.info(f"Metrics will be saved to: {output_filepath}")
 
+    kafka_producer: Optional[AIOKafkaProducer] = None
+    if args.kafka_brokers:
+        log.info(f"Attempting to initialize Kafka producer for brokers: {args.kafka_brokers}")
+        try:
+            kafka_producer = AIOKafkaProducer(
+                bootstrap_servers=args.kafka_brokers,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                acks='all'
+            )
+            await kafka_producer.start()
+            log.info(f"Kafka producer started. Metrics will be sent to topic: {args.kafka_topic}")
+        except Exception as e:
+            log.error(f"Failed to initialize or start Kafka producer: {e}. Kafka publishing will be disabled.", exc_info=True)
+            kafka_producer = None
+
     order_book_collection = OrderBookCollection(symbols)
 
     scheduler = Scheduler(interval_minutes=args.interval)
@@ -370,7 +399,9 @@ async def main(args: argparse.Namespace) -> None:
         calculators[symbol] = calculator
 
         # Define an async callback for each symbol
-        async def metric_callback(timestamp: str, sym: str = symbol, filepath: str = output_filepath) -> None:
+        async def metric_callback(timestamp: str, sym: str = symbol, filepath: str = output_filepath, 
+                                  producer: Optional[AIOKafkaProducer] = kafka_producer, 
+                                  topic: Optional[str] = args.kafka_topic if kafka_producer else None) -> None:
             # Ensure we are using the correct calculator for this symbol
             current_calculator = calculators[sym]
             log.info(f"Scheduler: Calculating metrics for {sym} at {timestamp}")
@@ -394,6 +425,17 @@ async def main(args: argparse.Namespace) -> None:
                     log.debug(f"[{sym}] Successfully wrote metric to {filepath}")
                 except Exception as e:
                     log.error(f"[{sym}] Error writing metric to file {filepath}: {e}")
+
+
+                if producer and topic:
+                    try:
+                        log.debug(f"[{sym}] Sending to Kafka topic '{topic}': {output_data}")
+                        # The producer's value_serializer will handle converting output_data to bytes.
+                        await producer.send_and_wait(topic, value=output_data, key=sym.encode('utf-8'))
+                        log.info(f"[{sym}] Successfully sent metric to Kafka topic '{topic}'")
+                    except Exception as e:
+                        log.error(f"[{sym}] Error sending metric to Kafka topic '{topic}': {e}", exc_info=True)
+
             else:
                 log.info(f"[{sym}] Could not calculate Second Level Spread at {timestamp}.")
         
@@ -412,7 +454,7 @@ async def main(args: argparse.Namespace) -> None:
 
             log.info(f"Connecting to: {binance_ws_url}")
 
-            listener_factory = partial(BinanceDepthListener, symbols=symbols, order_book_collection=order_book_collection, simulate_desync_flag=simulate_desync)
+            listener_factory = partial(BinanceStreamListener, symbols=symbols, order_book_collection=order_book_collection, simulate_desync_flag=simulate_desync)
             transport, _ = await ws_connect(listener_factory, binance_ws_url)
             await transport.wait_disconnected()
         except Exception as e:
