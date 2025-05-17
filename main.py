@@ -48,9 +48,12 @@ class OrderBook:
         for price, qty in snapshot["asks"]:
             self.asks[float(price)] = float(qty)
 
+        assert self.bids.keys()[0] < self.asks.keys()[0], "assert: Incorrect ordering of bids and asks"
+
         self.trim()
 
     def apply_diff(self, bids: List[List[str]], asks: List[List[str]]) -> None:
+        assert self.bids.keys()[0] < self.asks.keys()[0], "assert: Incorrect ordering of bids and asks"
         for price, qty in bids:
             p = float(price)
             q = float(qty)
@@ -66,6 +69,8 @@ class OrderBook:
                 self.asks.pop(p, None)
             else:
                 self.asks[p] = q
+
+        assert self.bids.keys()[0] < self.asks.keys()[0], "assert: Incorrect ordering of bids and asks"
 
         # self.trim()
 
@@ -130,9 +135,10 @@ class Scheduler:
     async def start(self):
         while True:
             now = datetime.datetime.utcnow()
-            next_minute = (now.minute // self.interval_minutes + 1) * self.interval_minutes
-            next_time = now.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=next_minute)
+            next_time = now + datetime.timedelta(seconds=(self.interval_minutes * 60 + 5))
+            next_time = next_time.replace(second=0, microsecond=0)
             sleep_duration = (next_time - now).total_seconds()
+            log.info(f"Scheduled next event in {sleep_duration:.1f} second(s)...")
             await asyncio.sleep(sleep_duration)
 
             timestamp = datetime.datetime.utcnow().isoformat()
@@ -157,8 +163,10 @@ class SecondLevelSpreadCalculator(BaseCalculation):
         if len(bids) >= 2 and len(asks) >= 2:
             second_bid = bids[1][0]
             second_ask = asks[1][0]
-            spread = (second_ask - second_bid) / ((second_ask + second_bid) / 2) * 100
-            return round(spread, 4)
+            assert second_bid < second_ask, "assert: Incorrect ordering of bids and asks"
+            spread = (second_ask - second_bid) / (second_ask + second_bid) * 0.5
+            assert spread >= 0, "assert: Invalid spread value"
+            return spread
         return None
     
 
@@ -449,7 +457,7 @@ async def main(args: argparse.Namespace) -> None:
     while True:
         try:
 
-            streams = "/".join(f"{symbol.lower()}@depth5@100ms" for symbol in symbols)
+            streams = "/".join(f"{symbol.lower()}@depth@100ms" for symbol in symbols)
             binance_ws_url = f"wss://fstream.binance.com/stream?streams={streams}"
 
             log.info(f"Connecting to: {binance_ws_url}")
