@@ -32,5 +32,5 @@ uv run --isolated pytest test_order_book.py
 
 
 **Binance Streams:**
- - [Partial Book Depth Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Partial-Book-Depth-Streams) - snapshop of the order book
+ - [Partial Book Depth Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Partial-Book-Depth-Streams) - snapshot of the order book
  - [Diff. Book Depth Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Diff-Book-Depth-Streams) - partial incremental updates of the order book
